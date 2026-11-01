@@ -1070,13 +1070,14 @@ private:
             LOG_INFO(Service, "nx2:vi2 229 present #{} token={:#x} slot={} image={}", m_presents,
                      u64{w[2]} | (u64{w[3]} << 32), w[4], w[5]);
         }
-        // Wait for the previous frame's fence instead of this one, so the game prepares frame N+1
-        // while the GPU thread runs frame N (the console keeps several frames in flight). Waiting
-        // for this frame serialized the two: 8-56 ms of every 34-105 ms frame on title 1.
-        // EDEN_NX2_FRAMES_AHEAD=0 restores the wait for the current frame.
+        // Wait for this frame's fence. EDEN_NX2_FRAMES_AHEAD=1 waits for the previous frame's
+        // instead, so the game prepares frame N+1 while the GPU thread runs frame N: on title 1
+        // waiting for this frame cost 8-56 ms of every 34-105 ms frame, but Pokopia then rewrites
+        // its triple-buffered glyph atlas before the GPU thread has read it, flashing the atlas
+        // over the screen and dropping letters from its text.
         static const bool frames_ahead = [] {
             const char* value = std::getenv("EDEN_NX2_FRAMES_AHEAD");
-            return value == nullptr || value[0] != '0';
+            return value != nullptr && value[0] == '1';
         }();
         const auto entered = std::chrono::steady_clock::now();
         if (frames_ahead) {
