@@ -5,9 +5,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <cstring>
+#include <filesystem>
 #include <iterator>
+#include <string>
 #include <utility>
+#include <vector>
 #include "common/assert.h"
 #include "common/fs/file.h"
 #include "common/fs/fs.h"
@@ -31,6 +36,13 @@
 
 #ifdef __ANDROID__
 #include "common/fs/fs_android.h"
+#endif
+
+#ifdef __APPLE__
+#include <fcntl.h>
+#include <sys/attr.h>
+#include <sys/vnode.h>
+#include <unistd.h>
 #endif
 
 namespace FileSys {
@@ -57,6 +69,67 @@ size_t MaxOpenFiles() {
 #endif
     return (std::min)(size_t{8192}, limit);
 }
+
+#ifdef __APPLE__
+// Lists a directory's files with their sizes in one getattrlistbulk pass. directory_entry has to
+// look each file up by path for its size, and on exFAT that lookup scans the directory: building
+// a loose RomFS with 53k files in one directory took minutes on a hard drive instead of seconds.
+// Returns false if the directory could not be listed this way.
+bool ListFilesWithSizes(const std::string& dir,
+                        std::vector<std::pair<std::string, u64>>& out_files) {
+    const int fd = open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        return false;
+    }
+    attrlist request{};
+    request.bitmapcount = ATTR_BIT_MAP_COUNT;
+    request.commonattr = ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_OBJTYPE;
+    request.fileattr = ATTR_FILE_DATALENGTH;
+
+    alignas(8) std::array<char, 128 * 1024> buffer;
+    bool ok = true;
+    while (true) {
+        const int count = getattrlistbulk(fd, &request, buffer.data(), buffer.size(), 0);
+        if (count <= 0) {
+            ok = count == 0;
+            break;
+        }
+        const char* entry = buffer.data();
+        for (int i = 0; i < count; ++i) {
+            u32 length;
+            std::memcpy(&length, entry, sizeof(length));
+            const char* field = entry + sizeof(length);
+            attribute_set_t returned;
+            std::memcpy(&returned, field, sizeof(returned));
+            field += sizeof(returned);
+            attrreference_t name_ref;
+            std::memcpy(&name_ref, field, sizeof(name_ref));
+            const std::string name(field + name_ref.attr_dataoffset,
+                                   name_ref.attr_length > 0 ? name_ref.attr_length - 1 : 0);
+            field += sizeof(name_ref);
+            fsobj_type_t type;
+            std::memcpy(&type, field, sizeof(type));
+            field += sizeof(type);
+
+            if (type == VREG && (returned.fileattr & ATTR_FILE_DATALENGTH) != 0) {
+                off_t size;
+                std::memcpy(&size, field, sizeof(size));
+                out_files.emplace_back(name, static_cast<u64>(size));
+            } else if (type == VLNK) {
+                // Follow links to files, as the directory_entry listing does.
+                std::error_code ec;
+                const auto target = std::filesystem::path{dir} / name;
+                if (std::filesystem::is_regular_file(target, ec)) {
+                    out_files.emplace_back(name, std::filesystem::file_size(target, ec));
+                }
+            }
+            entry += length;
+        }
+    }
+    close(fd);
+    return ok;
+}
+#endif
 
 bool IsWithinRoot(std::string_view root, std::string_view full_path) {
     if (root.empty())
@@ -394,6 +467,16 @@ std::vector<VirtualFile> RealVfsDirectory::IterateEntries<RealVfsFile, VfsFile>(
     }
 
     std::vector<VirtualFile> out;
+
+#ifdef __APPLE__
+    if (std::vector<std::pair<std::string, u64>> files; ListFilesWithSizes(path, files)) {
+        out.reserve(files.size());
+        for (const auto& [name, size] : files) {
+            out.emplace_back(base.OpenFileFromEntry(path + '/' + name, size, perms));
+        }
+        return out;
+    }
+#endif
 
     const FS::DirEntryCallable callback = [this,
                                            &out](const std::filesystem::directory_entry& entry) {

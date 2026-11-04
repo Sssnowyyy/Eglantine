@@ -426,8 +426,11 @@ void IterateDirEntries(const std::filesystem::path& path, const DirEntryCallable
     std::error_code ec;
     bool callback_error = false;
     for (auto const& entry : fs::directory_iterator(path, ec)) {
-        if ((True(filter & DirEntryFilter::File) && entry.status().type() == fs::file_type::regular)
-        || (True(filter & DirEntryFilter::Directory) && entry.status().type() == fs::file_type::directory)) {
+        // The cached type from the directory listing, unlike status(), avoids looking every entry
+        // up by path again (3 ms each in a 53k-file exFAT directory on a hard drive).
+        std::error_code type_ec;
+        if ((True(filter & DirEntryFilter::File) && entry.is_regular_file(type_ec))
+        || (True(filter & DirEntryFilter::Directory) && entry.is_directory(type_ec))) {
             if (!callback(entry)) {
                 callback_error = true;
             }
@@ -459,8 +462,10 @@ void IterateDirEntriesRecursively(const std::filesystem::path& path, const DirEn
     bool callback_error = false;
     // MSVC should now be fixed... right... right?!?!?!
     for (const auto& entry : fs::recursive_directory_iterator(path, ec)) {
-        if ((True(filter & DirEntryFilter::File) && entry.status().type() == fs::file_type::regular)
-        || (True(filter & DirEntryFilter::Directory) && entry.status().type() == fs::file_type::directory)) {
+        // As in IterateDirEntries, use the listing's cached type rather than a lookup by path.
+        std::error_code type_ec;
+        if ((True(filter & DirEntryFilter::File) && entry.is_regular_file(type_ec))
+        || (True(filter & DirEntryFilter::Directory) && entry.is_directory(type_ec))) {
             if (!callback(entry)) {
                 callback_error = true;
             }
