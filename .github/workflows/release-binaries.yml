@@ -9,8 +9,7 @@ on:
         default: true
   push:
     branches:
-      - nx2
-      - nx2-experimental
+      - hypervisor-test
     # A binary only changes when build inputs change; docs-only pushes skip the build.
     paths:
       - "src/**"
@@ -54,27 +53,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: linux-x86_64
-            runner: ubuntu-24.04
-          # The two -pgo builds are the same programs compiled by clang against the repo's
-          # eglantine.profdata. Eden's profile (Eden-CI/PGO) comes from Switch 1 games: with it Mario
-          # Kart World ran at about half the speed of the normal build, with eglantine.profdata at
-          # about the same speed. Windows uses MSYS2's MinGW clang like Eden does; MSVC cannot read
-          # an LLVM .profdata file.
-          - platform: linux-x86_64-pgo
-            runner: ubuntu-24.04
-            pgo: true
-          - platform: windows-x86_64
-            runner: windows-2022
-          - platform: windows-x86_64-pgo
-            runner: windows-2022
-            pgo: true
-            mingw: true
-          - platform: linux-aarch64
-            runner: ubuntu-24.04-arm
-          - platform: linux-aarch64-pgo
-            runner: ubuntu-24.04-arm
-            pgo: true
           - platform: macos-arm64
             runner: macos-15
 
@@ -570,6 +548,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
     steps:
       - name: Download binaries
         uses: actions/download-artifact@v7
@@ -612,25 +592,7 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 
           cat > notes.md <<EOF
-          Automatic build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}.
-
-          ## Linux
-
-          Linux packages come as an AppImage (self-contained, needs glibc 2.39 or newer: Ubuntu 24.04, Fedora 40, Debian 13, Arch) and a tar.gz (uses your system libraries, so Qt 6 and the usual libraries must be installed).
-
-          | Build Type | Standard | PGO (Recommended) | Notes |
-          | --- | --- | --- | --- |
-          | amd64 | [AppImage](${base}/eglantine-linux-x86_64.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64.tar.gz) | [AppImage](${base}/eglantine-linux-x86_64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-x86_64-pgo.tar.gz) | Make the AppImage executable (\`chmod +x\`) and run it |
-          | ARM (aarch64) | [AppImage](${base}/eglantine-linux-aarch64.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64.tar.gz) | [AppImage](${base}/eglantine-linux-aarch64-pgo.AppImage) · [tar.gz](${base}/eglantine-linux-aarch64-pgo.tar.gz) | |
-
-          ## Windows
-
-          Windows packages are in-place zip files: extract and run \`eglantine.exe\`, or \`eden-cli.exe\` from a terminal.
-
-          | Build Type | Standard | PGO (Recommended) | Notes |
-          | --- | --- | --- | --- |
-          | amd64 / x86_64 (MSVC) | [MSVC zip](${base}/eglantine-windows-x86_64.zip) | | Use if you run into graphical issues on other builds |
-          | amd64 / x86_64 (MinGW) | | [PGO zip](${base}/eglantine-windows-x86_64-pgo.zip) | Built with MinGW clang; bundles its own DLLs, no Visual C++ redistributable needed |
+          Hypervisor test build of \`${GITHUB_REF_NAME}\` at ${GITHUB_SHA}: the Hypervisor CPU backend with the open macOS fixes. For testing only.
 
           ## macOS
 
@@ -638,7 +600,6 @@ jobs:
           | --- | --- | --- | --- |
           | arm64 (Apple Silicon) | [zip](${base}/eglantine-macos-arm64.zip) | | macOS 15 or newer. Not notarized: right-click and choose Open the first time, or run \`xattr -dr com.apple.quarantine eglantine.app\`. \`eden-cli\` is inside the app, in \`Contents/MacOS\` |
 
-          The PGO builds are the same programs compiled with profile-guided optimization (clang plus Eglantine's profile); prefer them when your CPU supports it.
           EOF
 
           gh release create "${tag}" dist/* \
@@ -649,9 +610,8 @@ jobs:
             --notes-file notes.md
 
       - name: Ping Discord
+        if: env.WEBHOOK != ''
         shell: bash
-        env:
-          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/build-${GITHUB_RUN_NUMBER}"
           MSG=$(printf '## <@&1566184315178713190> Eglantine %s build %s (%s)\n%s' \
